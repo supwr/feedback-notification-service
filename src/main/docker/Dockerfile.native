@@ -1,0 +1,5 @@
+FROM public.ecr.aws/lambda/provided:al2023
+
+COPY --chmod=0755 target/*-runner /var/runtime/bootstrap
+
+CMD ["io.quarkus.amazon.lambda.runtime.QuarkusStreamHandler::handleRequest"]
