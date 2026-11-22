@@ -21,7 +21,7 @@ Microsservico worker responsavel por consumir eventos de notificacao da fila SQS
 
 ## Arquitetura da solução
 
-![img_1.png](img_1.png)
+![app_arch.png](app_arch.png)
 
 ## Arquitetura limpa
 
