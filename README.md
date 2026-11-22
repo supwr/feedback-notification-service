@@ -19,19 +19,13 @@ Microsservico worker responsavel por consumir eventos de notificacao da fila SQS
 - Amazon S3 (origem de anexos)
 - Maven + JUnit 5
 
-## Arquitetura
+## Arquitetura da solução
 
-O servico segue separacao em camadas:
+![img_1.png](img_1.png)
 
-- `domain`: modelos e portas
-- `application`: DTOs, exceptions, strategy e caso de uso
-- `infrastructure`: adapters AWS (Lambda/SQS, SES e S3)
+## Arquitetura limpa
 
-Principios aplicados:
-
-- `type` do evento define strategy de notificacao (`EMAIL` atualmente).
-- Classes de exception separadas por camada.
-- Sem vazamento de detalhes de infraestrutura para `domain/application`.
+![img.png](img.png)
 
 ## Contrato do evento de entrada (SQS body)
 
