@@ -1,109 +1,160 @@
-# notification-service
+# Notification Service
 
-Serviço Quarkus preparado para AWS Lambda/SQS e envio de notificações por email via SES.
+Microsservico worker responsavel por consumir eventos de notificacao da fila SQS e enviar emails via Amazon SES, com suporte a anexos armazenados no S3.
+
+## Descricao do projeto
+
+> Para garantir a qualidade dos cursos on-line, e necessario que eventos de
+> negocio disparem comunicacoes confiaveis para times internos e stakeholders.
+> Este servico processa requisicoes de notificacao de forma assicrona, permitindo
+> envio por email e preparando extensao para novos canais no futuro.
+
+## Stack
+
+- Java 21
+- Quarkus 3.40.x
+- AWS Lambda (handler Java)
+- Amazon SQS (trigger)
+- Amazon SES (envio de email)
+- Amazon S3 (origem de anexos)
+- Maven + JUnit 5
 
 ## Arquitetura
 
-O código segue Clean Architecture: `domain` não depende de AWS, `application` contém o evento, o use case e strategies, e `infrastructure` adapta SQS, SES e S3.
+O servico segue separacao em camadas:
 
-- A fila padrão é `notification-request` (`NOTIFICATION_QUEUE_NAME`).
-- O campo `type` aceita `EMAIL`; tipos futuros podem ser adicionados por novas strategies.
-- Anexos são informados por bucket/key no evento e obtidos internamente no S3 antes da montagem MIME.
-- Não são gerados nem compartilhados pre-signed URLs.
+- `domain`: modelos e portas
+- `application`: DTOs, exceptions, strategy e caso de uso
+- `infrastructure`: adapters AWS (Lambda/SQS, SES e S3)
 
-Exemplo de anexo:
+Principios aplicados:
+
+- `type` do evento define strategy de notificacao (`EMAIL` atualmente).
+- Classes de exception separadas por camada.
+- Sem vazamento de detalhes de infraestrutura para `domain/application`.
+
+## Contrato do evento de entrada (SQS body)
 
 ```json
 {
-  "bucket": "notifications",
-  "key": "feedback/report.pdf",
-  "fileName": "report.pdf",
-  "contentType": "application/pdf"
+  "notificationId": "notification-123",
+  "type": "EMAIL",
+  "source": "feedback",
+  "recipient": {
+    "to": ["suporte@example.com"],
+    "cc": [],
+    "bcc": []
+  },
+  "subject": "Nova avaliacao critica recebida",
+  "body": {
+    "text": "Uma avaliacao critica foi recebida. ID: b661e71f-3c46-43e2-bd68-78d9597c256b. Nota: 3.",
+    "html": "<h2>Nova avaliacao critica</h2><p>Uma avaliacao critica foi recebida.</p>"
+  },
+  "attachments": [
+    {
+      "bucket": "notifications",
+      "key": "feedback/report.pdf",
+      "fileName": "report.pdf",
+      "contentType": "application/pdf"
+    }
+  ],
+  "replyTo": [],
+  "metadata": {
+    "feedbackId": "b661e71f-3c46-43e2-bd68-78d9597c256b"
+  }
 }
 ```
 
-As aliases `bucketName` e `objectKey` também são aceitas.
+Observacoes:
 
-## Configuração AWS
+- `type` aceita `EMAIL` no estado atual.
+- `attachments` tambem aceita aliases `bucketName` e `objectKey`.
+- O servico busca anexos no S3 por bucket/chave e incorpora no MIME, sem presigned URL.
 
-- `AWS_REGION`: região dos clientes (padrão `us-east-2`).
-- `NOTIFICATION_QUEUE_NAME`: nome da fila (padrão `notification-request`).
-- `NOTIFICATION_EMAIL_SENDER`: endereço verificado no SES.
+## Fluxo de processamento
 
-O handler configurado é `com.notifier.infrastructure.messaging.SqsNotificationHandler`.
+1. O Lambda recebe mensagens da fila `notification-request`.
+2. O handler desserializa o body para `NotificationEvent`.
+3. O caso de uso seleciona a strategy pelo campo `type`.
+4. A strategy de email valida os dados obrigatorios.
+5. Quando houver anexos, o adapter de S3 obtem o conteudo do objeto.
+6. O adapter de SES envia:
+   - `SendEmail` sem anexo
+   - `SendRawEmail` com MIME e anexos
+7. Em caso de falha, a exception e propagada para retry pela SQS.
 
-## Lambda
+## Comandos basicos
 
-O Lambda recebe `SQSEvent` na camada de infraestrutura, converte a mensagem em `NotificationEvent` e executa o use case. Exceções devolvem a mensagem ao retry da fila.
+### Compilar
 
-## Deploy via GitHub Actions/ECR
+```bash
+./mvnw clean compile
+```
 
-O workflow `.github/workflows/deploy-ecr.yml` publica uma imagem nativa no ECR e atualiza uma função Lambda.
+### Executar testes
 
-Configure estas variáveis no repositório GitHub:
+```bash
+./mvnw clean test
+```
+
+### Gerar pacote JVM
+
+```bash
+./mvnw clean package -DskipTests
+```
+
+### Build nativo para Lambda
+
+```bash
+./mvnw clean package -Dquarkus.profile=prod -Dquarkus.native.enabled=true -Dquarkus.native.container-build=true
+```
+
+## Configuracao
+
+Arquivo principal: `src/main/resources/application.properties`
+
+```properties
+# AWS
+quarkus.ses.aws.region=${AWS_REGION:us-east-2}
+quarkus.ses.aws.credentials.type=default
+quarkus.s3.aws.region=${AWS_REGION:us-east-2}
+quarkus.s3.aws.credentials.type=default
+quarkus.sqs.aws.region=${AWS_REGION:us-east-2}
+quarkus.sqs.aws.credentials.type=default
+
+# Notification Lambda
+notification.queue.name=${NOTIFICATION_QUEUE_NAME:notification-request}
+notification.email.sender=${NOTIFICATION_EMAIL_SENDER:}
+quarkus.lambda.handler=com.notifier.infrastructure.messaging.SqsNotificationHandler
+```
+
+Variaveis principais:
+
+- `AWS_REGION`
+- `NOTIFICATION_QUEUE_NAME` (default `notification-request`)
+- `NOTIFICATION_EMAIL_SENDER` (endereco verificado no SES)
+
+## CI/CD
+
+Pipeline de deploy para ECR/Lambda: `.github/workflows/deploy-ecr.yml`
+
+Fluxo:
+1. execucao de testes
+2. build nativo
+3. build/push da imagem para ECR (`sha` e `latest`)
+4. update da funcao Lambda com a nova imagem
+
+Variaveis de repositorio esperadas no GitHub:
 
 - `AWS_REGION`
 - `AWS_ROLE_TO_ASSUME`
 - `ECR_REPOSITORY`
 - `LAMBDA_FUNCTION_NAME`
 
-O workflow executa os testes, cria o executável nativo com Maven em container, publica as tags do commit e `latest` e aguarda a conclusão da atualização da função Lambda.
+## Estrutura resumida
 
-
-This project uses Quarkus, the Supersonic Subatomic Java Framework.
-
-If you want to learn more about Quarkus, please visit its website: <https://quarkus.io/>.
-
-## Running the application in dev mode
-
-You can run your application in dev mode that enables live coding using:
-
-```shell script
-./mvnw quarkus:dev
-```
-
-> **_NOTE:_**  Quarkus now ships with a Dev UI, which is available in dev mode only at <http://localhost:8080/q/dev/>.
-
-## Packaging and running the application
-
-The application can be packaged using:
-
-```shell script
-./mvnw package
-```
-
-It produces the `quarkus-run.jar` file in the `target/quarkus-app/` directory.
-Be aware that it’s not an _über-jar_ as the dependencies are copied into the `target/quarkus-app/lib/` directory.
-
-The application is now runnable using `java -jar target/quarkus-app/quarkus-run.jar`.
-
-If you want to build an _über-jar_, execute the following command:
-
-```shell script
-./mvnw package -Dquarkus.package.jar.type=uber-jar
-```
-
-The application, packaged as an _über-jar_, is now runnable using `java -jar target/*-runner.jar`.
-
-## Creating a native executable
-
-You can create a native executable using:
-
-```shell script
-./mvnw package -Dnative
-```
-
-Or, if you don't have GraalVM installed, you can run the native executable build in a container using:
-
-```shell script
-./mvnw package -Dnative -Dquarkus.native.container-build=true
-```
-
-You can then execute your native executable with: `./target/worker-1.0.0-SNAPSHOT-runner`
-
-If you want to learn more about building native executables, please consult <https://quarkus.io/guides/maven-tooling>.
-
-## Related Guides
-
-- Amazon SES ([guide](https://docs.quarkiverse.io/quarkus-amazon-services/dev/amazon-ses.html)): Connect to Amazon SES
-- Amazon SQS ([guide](https://docs.quarkiverse.io/quarkus-amazon-services/dev/amazon-sqs.html)): Connect to Amazon SQS messaging queue service
+- `src/main/java/com/notifier/domain` - modelos, portas e exceptions de dominio
+- `src/main/java/com/notifier/application` - DTOs, exceptions, strategy e use case
+- `src/main/java/com/notifier/infrastructure` - integracao AWS e exceptions de infraestrutura
+- `src/main/resources/application.properties` - configuracao padrao
+- `.github/workflows/deploy-ecr.yml` - pipeline de deploy ECR/Lambda
